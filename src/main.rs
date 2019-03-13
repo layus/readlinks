@@ -22,7 +22,7 @@ fn main() -> std::io::Result<()> {
     if let Some(path) = args.value_of("path") {
         let path = expand_path(path);
         println!("{}", path.display());
-        resolve_iter(path).for_each(|s| {
+        resolve(path).for_each(|s| {
             if verbose {
                 println!("{} -> {}", s.source.display(), s.target.display());
             }
