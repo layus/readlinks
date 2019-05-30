@@ -1,8 +1,62 @@
+extern crate libc;
+
 use std::fs;
 use std::env;
+use std::fmt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::io::Result;
+
+pub enum SymlinkPath {
+    Symlink {
+        source: PathBuf,
+        target: PathBuf,
+        suffix: PathBuf,
+    },
+    NotLink (PathBuf),
+}
+use SymlinkPath::*;
+
+impl SymlinkPath {
+    fn resolve(&self) -> PathBuf {
+        match self {
+            NotLink(p) => p.clone(),
+            Symlink{ source, target, suffix } => {
+                let mut resolved = source.as_path().parent().unwrap().to_path_buf();
+                resolved.push(target.as_path());
+                if suffix.iter().next().is_some() {
+                    resolved.push(suffix.as_path());
+                }
+                resolved
+            },
+        }
+    }
+}
+
+fn colorize(s: &str) -> String {
+    if cfg!(target_os = "linux") && unsafe { libc::isatty(libc::STDOUT_FILENO as i32) } != 0 {
+        format!("\x1B[31m{}\x1B[0m", s)
+    } else {
+        s.to_owned()
+    }
+}
+
+fn format_symlink(f: &mut fmt::Formatter, source: &PathBuf, suffix: Option<&PathBuf>) -> fmt::Result {
+    match suffix {
+        Some(suffix) => write!(f, "{}{}{}", source.display(), colorize("/"), suffix.display()),
+        None         => write!(f, "{}", source.display()),
+    }
+}
+
+impl fmt::Display for SymlinkPath {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            NotLink (path) => format_symlink(f, path, None),
+            Symlink { source, target: _, suffix } =>
+                format_symlink(f, source, Some(suffix).filter(|_| suffix.iter().next().is_some())),
+        }
+    }
+}
 
 fn readlink<P: AsRef<Path>>(p: P) -> Result<Option<PathBuf>> {
     let metadata = fs::symlink_metadata(&p)?;
@@ -14,56 +68,44 @@ fn readlink<P: AsRef<Path>>(p: P) -> Result<Option<PathBuf>> {
     }
 }
 
-fn find_symlink<P: AsRef<Path>>(path: P) -> Result<Option<Symlink>>{
+fn find_symlink<P: AsRef<Path>>(path: P) -> Result<SymlinkPath>{
     let mut prefix = PathBuf::new();
-    let mut parts = path.as_ref().iter();
+    let mut parts = path.as_ref().components();
     while let Some(part) = parts.next() {
         prefix.push(&part);
         if let Some(target) = readlink(&prefix)? {
-            return Ok(Some(Symlink::new(prefix, target, parts.collect())))
+            return Ok(Symlink {
+                source: prefix,
+                target,
+                suffix: parts.as_path().into()
+            })
         }
     }
-    Ok(None)
-}
-
-pub struct Symlink {
-    pub source: PathBuf,
-    pub target: PathBuf,
-    pub suffix: PathBuf,
-    pub resolved: PathBuf,
-}
-
-impl Symlink {
-    pub fn new(source: PathBuf, target: PathBuf, suffix: PathBuf) -> Symlink {
-        let mut resolved = source.as_path().parent().unwrap().to_path_buf();
-        // XXX: Unwrap looks safe here as the root cannot be a symlink
-        // and is the only path with no parent.
-        resolved.push(target.as_path());
-        if suffix.iter().next().is_some() {
-            resolved.push(suffix.as_path());
-        }
-
-        Symlink { source, target, suffix, resolved, }
-    }
+    Ok(NotLink(prefix))
 }
 
 pub struct ReadlinksIterator {
     path: PathBuf,
+    done: bool,
 }
 
 impl Iterator for ReadlinksIterator {
-    type Item = Symlink;
+    type Item = SymlinkPath;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match find_symlink(&self.path) {
-            Ok(Some(s)) => {
-                self.path = s.resolved.clone();
-                Some(s)
-            },
-            Ok(None) => None,
+        if self.done { return None }
 
+        match find_symlink(&self.path) {
+            Ok(symlink_path) => {
+                if let NotLink(_) = symlink_path { self.done = true; }
+                self.path = symlink_path.resolve();
+                Some(symlink_path)
+            },
+            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.done = true;
+                Some(NotLink(self.path.clone()))
+            }
             // TODO: Move error handling to main.rs
-            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => {
                 eprintln!("Accessing {} failed: {}", self.path.display(), e);
                 None
@@ -73,16 +115,21 @@ impl Iterator for ReadlinksIterator {
 }
 
 pub fn resolve<P:AsRef<Path>>(p: P) -> ReadlinksIterator {
-    ReadlinksIterator { path: p.as_ref().to_path_buf() }
+    ReadlinksIterator { path: p.as_ref().to_path_buf(), done: false }
 }
 
-pub fn expand_path<P: AsRef<Path>>(bin: P) -> PathBuf {
-    let bin = bin.as_ref();
-    env::var_os("PATH").and_then(|ref paths|
-        env::split_paths(paths)
-        .map(|p| p.join(bin))
-        .find(|p| p.is_file())
-    ).unwrap_or_else(|| bin.to_path_buf())
+pub fn expand_path<P: AsRef<Path>>(path: P) -> PathBuf {
+    let path = path.as_ref();
+    Some(path)
+    // Expand with PATH only if it is a single path component
+    .filter(|path| path.components().take(2).count() == 1)
+    .and_then(|exe|
+        env::var_os("PATH").and_then(|ref paths|
+            env::split_paths(paths)
+            .map(|prefix| prefix.join(exe))
+            .find(|bin| bin.is_file()) // TODO: Check that it is actually executable.
+        ))
+    .unwrap_or_else(|| path.to_path_buf())
 }
 
 

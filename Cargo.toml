@@ -5,3 +5,4 @@ authors = ["Guillaume Maudoux <layus.on@gmail.com>"]
 
 [dependencies]
 clap = "2.32.0"
+libc = "0.2"
