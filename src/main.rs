@@ -7,7 +7,7 @@ use readlinks::*;
 fn main() {
     let args = App::new("readlinks")
         .version("0.1.0")
-        .author("Guillaume Maudoux \"Layus\" <layus.on@gmail.com>")
+        .author("Guillaume Maudoux (layus) <layus.on@gmail.com>")
         .about("readlinks, the pedantic symlink resolver.")
         .arg(Arg::with_name("path")
             .help("An executable reachable through $PATH, or a filesystem path.")

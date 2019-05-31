@@ -116,15 +116,17 @@ impl Iterator for ReadlinksIterator {
     type Item = SymlinkPath;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None
+        }
         match find_symlink(&self.path) {
             Ok(symlink_path) => {
-                let resolved = symlink_path.resolve();
-                if resolved == self.path {
-                    None
-                } else {
-                    self.path = resolved;
-                    Some(symlink_path)
+                // When resolution is finished, we still need one iteration to print the final result
+                if let NotLink(_) = symlink_path {
+                    self.done = true;
                 }
+                self.path = symlink_path.resolve();
+                Some(symlink_path)
             },
             Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {
                 self.done = true;
