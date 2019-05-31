@@ -33,6 +33,11 @@ impl SymlinkPath {
     }
 }
 
+
+
+// # Formatting
+
+/// Add ansi escape codes to make the given string red when stdout is a terminal.
 fn colorize(s: &str) -> String {
     if cfg!(target_os = "linux") && unsafe { libc::isatty(libc::STDOUT_FILENO as i32) } != 0 {
         format!("\x1B[31m{}\x1B[0m", s)
@@ -41,33 +46,48 @@ fn colorize(s: &str) -> String {
     }
 }
 
-fn format_symlink(f: &mut fmt::Formatter, source: &PathBuf, suffix: Option<&PathBuf>) -> fmt::Result {
-    match suffix {
-        Some(suffix) => write!(f, "{}{}{}", source.display(), colorize("/"), suffix.display()),
-        None         => write!(f, "{}", source.display()),
+fn format_symlink(f: &mut fmt::Formatter, source: &PathBuf, suffix: Option<&PathBuf>, exists: bool) -> fmt::Result {
+    let exists = if exists {""} else {" (not found)"};
+    // Test if we have a non-empty suffix
+    match suffix.filter(|s| s.iter().next().is_some()) {
+        Some(suffix) => write!(f, "{}{}{}{}", source.display(), colorize("/"), suffix.display(), exists),
+        None         => write!(f, "{}{}", source.display(), exists),
     }
 }
 
 impl fmt::Display for SymlinkPath {
+    /// Rich formatter for symlinks
+    ///
+    /// * Tag a `NotLink` path when it does not exist
+    /// * On ansi tty, separate the first symlink from the remainder of the path with a red slash.
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            NotLink (path) => format_symlink(f, path, None),
+            NotLink (path) =>
+                format_symlink(f, path, None, path.metadata().is_ok()),
             Symlink { source, target: _, suffix } =>
-                format_symlink(f, source, Some(suffix).filter(|_| suffix.iter().next().is_some())),
+                format_symlink(f, source, Some(suffix), true),
         }
     }
 }
 
-fn readlink<P: AsRef<Path>>(p: P) -> Result<Option<PathBuf>> {
-    let metadata = fs::symlink_metadata(&p)?;
+
+/// Query the symbolic target of a `path`.
+///
+/// This is a generic wrapper around `read_link()` to also check whether it's a symlink
+/// before reading its target. The path need not be a symlink, in which case `None` is returned.
+fn readlink<P: AsRef<Path>>(path: P) -> Result<Option<PathBuf>> {
+    let metadata = fs::symlink_metadata(&path)?;
     if !metadata.file_type().is_symlink() {
         Ok(None)
     } else {
-        let target = fs::read_link(&p)?;
+        let target = fs::read_link(&path)?;
         Ok(Some(target))
     }
 }
 
+/// Find the first symlink in a `path`.
+///
+/// Works by iteratively
 fn find_symlink<P: AsRef<Path>>(path: P) -> Result<SymlinkPath>{
     let mut prefix = PathBuf::new();
     let mut parts = path.as_ref().components();
@@ -89,17 +109,22 @@ pub struct ReadlinksIterator {
     done: bool,
 }
 
+/// Readlinks path lookup logic
+///
+/// This works by iteratively calling find_symlink and expanding the result.
 impl Iterator for ReadlinksIterator {
     type Item = SymlinkPath;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.done { return None }
-
         match find_symlink(&self.path) {
             Ok(symlink_path) => {
-                if let NotLink(_) = symlink_path { self.done = true; }
-                self.path = symlink_path.resolve();
-                Some(symlink_path)
+                let resolved = symlink_path.resolve();
+                if resolved == self.path {
+                    None
+                } else {
+                    self.path = resolved;
+                    Some(symlink_path)
+                }
             },
             Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {
                 self.done = true;
@@ -114,10 +139,13 @@ impl Iterator for ReadlinksIterator {
     }
 }
 
-pub fn resolve<P:AsRef<Path>>(p: P) -> ReadlinksIterator {
-    ReadlinksIterator { path: p.as_ref().to_path_buf(), done: false }
+/// List all the intermediate symlinks in the resolution of `path`.
+pub fn resolve<P:AsRef<Path>>(path: P) -> ReadlinksIterator {
+    ReadlinksIterator { path: path.as_ref().to_path_buf(), done: false }
 }
 
+
+/// Lookup the full path of a command available in $PATH, or return the input as-is.
 pub fn expand_path<P: AsRef<Path>>(path: P) -> PathBuf {
     let path = path.as_ref();
     Some(path)
@@ -132,40 +160,3 @@ pub fn expand_path<P: AsRef<Path>>(path: P) -> PathBuf {
     .unwrap_or_else(|| path.to_path_buf())
 }
 
-
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-
-    // TODO: do not rely on /nix/store symlinks.
-
-    #[test]
-    fn readlink_works() {
-        let link = "/run/current-system";
-        match readlink(link) {
-            Ok(Some(path)) => assert!(path.starts_with("/nix/store")),
-            _ => assert!(false, format!("{} should be a valid symlink!", link))
-        }
-    }
-
-    #[test]
-    fn find_symlink_works() {
-        let link = Path::new("/run/current-system");
-        match find_symlink(link) {
-            Ok(Some(s)) => {
-                assert_eq!(s.source, link);
-                assert!(s.target.starts_with("/nix/store/"));
-                assert_eq!(s.suffix, Path::new(""));
-                assert_eq!(s.resolved, s.target);
-            }
-            _ => assert!(false)
-        }
-    }
-
-    #[test]
-    fn expand_path_works() {
-        let expanded = expand_path(&"env");
-        assert!(expanded.is_absolute());
-    }
-}
