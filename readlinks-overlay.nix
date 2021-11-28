@@ -21,6 +21,6 @@ with super;
 
     doCheck = false;
 
-    cargoSha256 = "06m8pi99ypjfaih0xpvf2myjdq9rx8rw2q0kybqn5nlmrpnaa3hm";
+    cargoSha256 = "07cs4vqssw7d8zn1yiksq1fxn7zvf7q4g4f5bjzbi8bi8sr9wwrj";
   };
 }
