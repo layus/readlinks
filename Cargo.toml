@@ -2,6 +2,7 @@
 name = "readlinks"
 version = "0.1.0"
 authors = ["Guillaume Maudoux <layus.on@gmail.com>"]
+edition = "2021"
 
 [dependencies]
-clap = "2.32.0"
+clap = { version = "4", features = ["derive"] }
